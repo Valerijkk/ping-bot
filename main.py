@@ -1,7 +1,9 @@
 import os
 import logging
+import threading
 from functools import wraps
 
+from aiohttp import web
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -23,6 +25,7 @@ from telegram.ext import (
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
     raise RuntimeError("TELEGRAM_TOKEN не задан в окружении")
+PORT = int(os.getenv("PORT", 8000))  # Render автоматически ставит этот порт
 ALLOWED_USERNAME = "R0FJlan4K"
 
 MENTIONS = [
@@ -57,7 +60,8 @@ def start(update: Update, context: CallbackContext):
     msg = update.message.reply_text(
         "Привет! Выбери действие:",
         reply_markup=ReplyKeyboardMarkup(
-            [["❗ Создать оповещение"], ["❓ Помощь"]], resize_keyboard=True
+            [["❗ Создать оповещение"], ["❓ Помощь"]],
+            resize_keyboard=True
         )
     )
     context.chat_data['last_msg'] = msg.message_id
@@ -133,12 +137,25 @@ def button_notify(update: Update, context: CallbackContext):
     full_msg = f"{text}\n\n{' '.join(MENTIONS)}"
     context.bot.send_message(chat_id=chat_id, text=full_msg)
 
+def run_http():
+    """Запускаем aiohttp-сервер для health checks."""
+    async def health(request):
+        return web.Response(text="OK")
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/healthz", health)
+    web.run_app(app, host="0.0.0.0", port=PORT)
+
 def main():
+    # 1) стартуем HTTP-сервер в фоне
+    t = threading.Thread(target=run_http, daemon=True)
+    t.start()
+
+    # 2) настраиваем и запускаем бот
     updater = Updater(TOKEN, use_context=True)
-    updater.bot.delete_webhook(drop_pending_updates=True)  # ВАЖНО: сбрасываем вебхук
+    updater.bot.delete_webhook(drop_pending_updates=True)
 
     dp = updater.dispatcher
-
     updater.bot.set_my_commands([
         BotCommand("start", "Показать главное меню"),
         BotCommand("help", "Справка по функциям"),
