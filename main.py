@@ -20,26 +20,26 @@ from telegram.ext import (
     Filters,
     CallbackContext,
 )
+from telegram.error import Conflict
 
-# ——— Конфигурация ———
+# ——— Конфигурация —————————————————————————————
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
     raise RuntimeError("TELEGRAM_TOKEN не задан в окружении")
-PORT = int(os.getenv("PORT", 8000))  # Render автоматически ставит этот порт
-ALLOWED_USERNAME = "R0FJlan4K"
 
+# Render передаёт свой HTTP-порт в переменную PORT
+PORT = int(os.getenv("PORT", "8000"))
+
+ALLOWED_USERNAME = "R0FJlan4K"
 MENTIONS = [
-    "@ROFJlan4K",
-    "@hyiablo",
-    "@sitiss_amoriss",
-    "@Katefak",
-    "@Teranixs",
-    "@AlSerTim",
+    "@ROFJlan4K", "@hyiablo", "@sitiss_amoriss",
+    "@Katefak", "@Teranixs", "@AlSerTim",
 ]
 
 ASKING_TEXT = 1
 pending_announcements = {}
 
+# ——— Утилита для ограничения доступа ———————————————
 def restricted(func):
     @wraps(func)
     def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
@@ -49,8 +49,10 @@ def restricted(func):
         return func(update, context, *args, **kwargs)
     return wrapped
 
+# ——— Хендлеры бота ——————————————————————————————
 @restricted
-def start(update: Update, context: CallbackContext):
+def start_cmd(update: Update, context: CallbackContext):
+    # удаляем предидущее bot/menu-сообщение
     if 'last_msg' in context.chat_data:
         try:
             context.bot.delete_message(update.effective_chat.id, context.chat_data['last_msg'])
@@ -67,7 +69,7 @@ def start(update: Update, context: CallbackContext):
     context.chat_data['last_msg'] = msg.message_id
 
 @restricted
-def help_command(update: Update, context: CallbackContext):
+def help_cmd(update: Update, context: CallbackContext):
     if 'last_msg' in context.chat_data:
         try:
             context.bot.delete_message(update.effective_chat.id, context.chat_data['last_msg'])
@@ -137,28 +139,31 @@ def button_notify(update: Update, context: CallbackContext):
     full_msg = f"{text}\n\n{' '.join(MENTIONS)}"
     context.bot.send_message(chat_id=chat_id, text=full_msg)
 
+# ——— Встроенный HTTP-сервер для health check —————————
 def run_http():
-    """Запускаем aiohttp-сервер для health checks."""
     async def health(request):
         return web.Response(text="OK")
     app = web.Application()
-    app.router.add_get("/", health)
-    app.router.add_get("/healthz", health)
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    app.router.add_get('/',  health)
+    app.router.add_get('/healthz', health)
+    # ВАЖНО: handle_signals=False, чтобы не ловить ошибку set_wakeup_fd
+    web.run_app(app, host='0.0.0.0', port=PORT, handle_signals=False)
 
+# ——— Основная точка входа —————————————————————————
 def main():
-    # 1) стартуем HTTP-сервер в фоне
-    t = threading.Thread(target=run_http, daemon=True)
-    t.start()
+    # 1) Старт HTTP-сервера в фоне
+    threading.Thread(target=run_http, daemon=True).start()
 
-    # 2) настраиваем и запускаем бот
+    # 2) Настраиваем и запускаем telegram long-polling
     updater = Updater(TOKEN, use_context=True)
+    # сбросим любой ранее установленный webhook
     updater.bot.delete_webhook(drop_pending_updates=True)
 
     dp = updater.dispatcher
+    # команды в меню Telegram-клиента
     updater.bot.set_my_commands([
         BotCommand("start", "Показать главное меню"),
-        BotCommand("help", "Справка по функциям"),
+        BotCommand("help",  "Справка по функциям"),
     ])
 
     conv = ConversationHandler(
@@ -166,19 +171,26 @@ def main():
             CommandHandler("announce", announce_start),
             MessageHandler(Filters.regex("^❗ Создать оповещение$"), announce_start),
         ],
-        states={ASKING_TEXT: [
-            MessageHandler(Filters.text & ~Filters.command, receive_text)
-        ]},
+        states={
+            ASKING_TEXT: [MessageHandler(Filters.text & ~Filters.command, receive_text)]
+        },
         fallbacks=[]
     )
 
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("start", start_cmd))
+    dp.add_handler(CommandHandler("help",  help_cmd))
     dp.add_handler(conv)
     dp.add_handler(CallbackQueryHandler(button_notify, pattern="^notify_all$"))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, lambda u, c: None))
+    # «глушим» остальные текстовые
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, lambda u,c: None))
 
-    updater.start_polling()
+    # 3) Запуск polling с ловлей Conflict
+    try:
+        updater.start_polling()
+    except Conflict:
+        logging.warning("Получен telegram.error.Conflict — предполагаем, что веб-хук сброшен.")
+        updater.start_polling()
+
     updater.idle()
 
 if __name__ == "__main__":
