@@ -1,0 +1,10 @@
+version: "3.8"
+
+services:
+  welcome-bot:
+    build: .
+    # Берёт переменные из локального .env
+    env_file:
+      - .env
+    # Перезапускать, если контейнер упал
+    restart: unless-stopped
