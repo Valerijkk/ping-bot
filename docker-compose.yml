@@ -3,8 +3,11 @@ version: "3.8"
 services:
   welcome-bot:
     build: .
-    # Берёт переменные из локального .env
+    # Берёт переменные из локального .env (TELEGRAM_TOKEN, PORT и т.д.)
     env_file:
       - .env
-    # Перезапускать, если контейнер упал
+    # Пробрасываем порт для health-check и локального отладки
+    ports:
+      - "${PORT:-8000}:8000"
+    # Перезапускать, если контейнер упадёт
     restart: unless-stopped
